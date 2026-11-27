@@ -6,7 +6,7 @@ Platform: Android-first mobile application
 Primary Objective: Enable peer-to-peer payments without an active internet connection, with subsequent backend verification and blockchain reconciliation.
 Tagline: Pay anywhere. Reconcile everywhere.
 
-Implementation note: Section 20 records the agreed P0 decisions that refine this PRD. Detailed contracts live in docs/API.md, docs/architecture.md and docs/threat-model.md; where those documents differ from the tentative proposals below, they take precedence.
+Implementation note: Sections 20 and 21 record the agreed P0 and P1 decisions that refine this PRD. Detailed contracts live in docs/API.md, docs/architecture.md and docs/threat-model.md; where those documents differ from the tentative proposals below, they take precedence.
 
 
 ⸻
@@ -69,7 +69,7 @@ Consensus QBFT
 Smart contracts Solidity
 Development containers Podman
 CI/CD GitHub Actions
-The proposed blockchain architecture should be reviewed before implementation to confirm that the additional complexity is justified by the project’s objectives. (Open gate — see §20; DevOps will add initial infrastructure code later.)
+The proposed blockchain architecture should be reviewed before implementation to confirm that the additional complexity is justified by the project’s objectives. Gate reaffirmed (§21): Besu/QBFT stays in the MVP; DevOps will add initial infrastructure code later.
 6. System Architecture
 OFPAY will consist of five major components.
 6.1 Mobile Application
@@ -357,7 +357,7 @@ The mobile devices handle offline payment exchange and local verification. The b
 This distinction is essential to the correctness of the architecture.
 
 20. Agreed Implementation Decisions (P0)
-The following decisions refine the proposals above and are binding for implementation. Full details are in docs/API.md, docs/architecture.md and docs/threat-model.md. No application code is to be written until the group confirms these decisions and the initial three application admins are named.
+The following decisions refine the proposals above and are binding for implementation. Full details are in docs/API.md, docs/architecture.md and docs/threat-model.md. These decisions are confirmed; the initial three application admins and final caps are named in §21. No application code is to be written until the Rust workstream is unblocked by group discussion.
 
 ID Decision
 P0-01 API: {data,error,meta} envelope; 422 terminal / 409 conflict / 200 duplicate; sync returns one 200 with per-item results; per-item DB transactions; idempotency via request key, batch_id and tx_id.
@@ -370,7 +370,21 @@ P0-07 Conflicts: provisional first acceptance with a configurable 5-minute conte
 P0-08 Time and money: server UTC only; strict expiry with no grace; not_before = server_now minus 60s; explicit server caps with checked arithmetic; release at expiry plus contest window.
 P0-09 Blockchain: receipt plus one QBFT block is RECONCILED; backoff with five attempts; exhaustion leads to REVIEW_REQUIRED; duplicate registration with matching hash is success; mobile sees coarse chain_status.
 
-Open items: name the initial three app admins; confirm final numeric caps; settle P1 details (idempotency retention, QR byte budget, key rotation, golden vectors, on-chain field set); reaffirm the §5 blockchain-complexity gate.
+Initial application admins: Tazorx7, asarepok and Neequaye279. All three are GitHub write collaborators; application admin status is stored in the app-level admins table, independent of repository roles, and the list must be changeable later through an admin-management endpoint with append-only events.
+
+Confirmed caps: 10,000 pesewas maximum per allowance request, 500,000 pesewas initial simulated wallet balance, 5-minute configurable contest window. Section 5's blockchain-complexity gate is reaffirmed in §21.
+
+21. Agreed Implementation Decisions (P1)
+The following decisions complete the design contract. Full details are in docs/API.md, docs/architecture.md and docs/threat-model.md.
+
+ID Decision
+P1-01 Idempotency: records retained 7 days; replay detected by stored hash of the canonicalised body; status endpoints recompute current DB state; scope is (user_id, device_id, route, key); non-status mutations return the stored response.
+P1-02 QR: raw binary CBOR in byte mode with an OFPAY1 header; 600-byte target / 800-byte hard cap at ECC level M; compact 8-byte key_id; golden-vector CI size check; no multi-frame QR in MVP.
+P1-03 Keys: user-initiated rotation with new-key challenge proof plus admin revocation; bounded old-key overlap until min(24h, allowance.expires_at) with no new payments; device counter continues on same-device rotation; StrongBox preferred with a documented software fallback; key_id is an 8-byte hash of the public key.
+P1-04 Vectors: full canonical encoding/signature/hash set for allowance, payment, wallet-ID QR and enrolment challenge plus negative cases (tampering, wrong domain, unknown version, expiry, replayed counter) and a QR-size fixture; engine-generated files checked into tests/vectors/v1/; dedicated test-only keys and RFC 8032 primitives; required CI check once DevOps lands workflows; v1 immutable with a new directory per schema bump.
+P1-05 Chain: contract stores tx_id only (bytes32); event is TransactionRegistered(txId indexed, submitter, timestamp); duplicate registration reverts AlreadyRegistered and the backend maps a matching-hash revert to success; allowlisted backend signer only; no pause or emergency admin function in MVP.
+
+Open items: none blocking the design contract. Status checks remain unset until DevOps adds CI; the golden-vector job becomes a required check at that point. Application code remains on hold until the group unblocks the Rust workstream.
 
 
 ⸻
