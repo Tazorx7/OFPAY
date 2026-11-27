@@ -6,6 +6,8 @@ Platform: Android-first mobile application
 Primary Objective: Enable peer-to-peer payments without an active internet connection, with subsequent backend verification and blockchain reconciliation.
 Tagline: Pay anywhere. Reconcile everywhere.
 
+Implementation note: Sections 20 and 21 record the agreed P0 and P1 decisions that refine this PRD. Detailed contracts live in docs/API.md, docs/architecture.md and docs/threat-model.md; where those documents differ from the tentative proposals below, they take precedence.
+
 
 ⸻
 
@@ -67,7 +69,7 @@ Consensus QBFT
 Smart contracts Solidity
 Development containers Podman
 CI/CD GitHub Actions
-The proposed blockchain architecture should be reviewed before implementation to confirm that the additional complexity is justified by the project’s objectives.
+The proposed blockchain architecture should be reviewed before implementation to confirm that the additional complexity is justified by the project’s objectives. Gate reaffirmed (§21): Besu/QBFT stays in the MVP; DevOps will add initial infrastructure code later.
 6. System Architecture
 OFPAY will consist of five major components.
 6.1 Mobile Application
@@ -153,6 +155,7 @@ CONFLICT Conflicting spending claim detected.
 EXPIRED Relevant allowance or transaction has expired.
 REVIEW_REQUIRED Transaction requires further investigation.
 Important: Local verification does not mean that a transaction has been finally settled. The user interface must distinguish pending reconciliation from confirmed reconciliation.
+Agreed refinement (§20): blockchain submission is held for a configurable contest window (5 minutes in the demo). A conflicting claim freezes both transactions in REVIEW_REQUIRED; two of three designated application admins decide whether to confirm the first claim, award the other, or reject both. Only accepted claims are written on-chain; late conflicts are documented, not reversed.
 9. Security and Cryptographic Requirements
 Security is a central part of OFPAY.
 The implementation should consider:
@@ -168,6 +171,7 @@ Duplicate transaction detection.
 Secure local key storage.
 Server-side validation.
 Idempotent synchronisation.
+Agreed refinements (§20): canonical CBOR with versioned domain strings; tx_id is the SHA-256 of the canonical payment bytes; device-wide monotonic counters accepted when greater than the last seen value; strict server-time expiry with no grace. Synchronisation uses an idempotency key, batch_id and tx_id.
 Offline Spending Allowances
 An allowance represents a portion of a user’s available funds that has been reserved by the backend for offline spending.
 The backend provisions and signs an allowance containing information such as:Wallet identifier.
@@ -179,6 +183,7 @@ Unique allowance nonce.
 All monetary values must use integer minor units rather than floating-point numbers.
 For example:
 GH₵30.00 = 3000 pesewas.
+Agreed refinements (§20): allowances are multi-spend with cumulative consumption; the backend reserves the full cap at issuance and auto-releases unused funds at expiry plus the contest window; several active allowances per device are allowed; the client requests an amount and the server enforces caps. Allowances are signed by a backend issuer key, bound to a wallet and device key, and carry a spend-mode field.
 Double-Spending Considerations
 A major challenge in offline payment systems is double spending.
 Digital signatures alone do not prevent a user from copying wallet data, restoring an old device state or attempting to spend the same allowance multiple times.
@@ -212,7 +217,7 @@ POST /transactions/sync Synchronise pending transactions
 GET /transactions Retrieve transaction history
 GET /transactions/{id} Retrieve transaction details
 GET /blockchain/transaction/{id} Retrieve reconciliation information
-These endpoints are proposed interfaces and should be refined during backend and mobile integration.
+These endpoints are proposed interfaces and should be refined during backend and mobile integration. Agreed refinements (§20, see docs/API.md): add GET /devices/challenge, POST /devices and GET /config/keys; all responses use a {data,error,meta} envelope; POST /transactions/sync returns one HTTP 200 with per-item statuses; POST /transactions/verify is read-only; admin decisions use POST /reviews/{id}/decisions.
 12. Database Entities
 The proposed database should contain the following core entities:
 Users
@@ -308,6 +313,7 @@ Replay attempt: A previously processed transaction cannot be registered again.
 Double-spending simulation: Conflicting claims against the same allowance are detected.
 Interrupted synchronisation: Repeated synchronisation does not create duplicate transactions.
 Expired allowance: An expired allowance cannot be used to authorise a new payment.
+Agreed additions (§20): contested sync (two conflicting claims during the 5-minute window produce one settlement and one REVIEW_REQUIRED with a 2-of-3 admin decision), counter rollback detection, interrupted batch replay, chain retry exhaustion, and canonical golden-vector checks. Blockchain confirmation latency includes the contest window.
 Performance Metrics
 Local transaction verification time.
 QR payload size.
@@ -349,6 +355,36 @@ The team can demonstrate the system’s security model and limitations.
 OFPAY does not use blockchain to perform offline consensus.
 The mobile devices handle offline payment exchange and local verification. The backend performs authoritative validation when connectivity returns. The permissioned blockchain provides a shared, tamper-evident record of reconciled transactions.
 This distinction is essential to the correctness of the architecture.
+
+20. Agreed Implementation Decisions (P0)
+The following decisions refine the proposals above and are binding for implementation. Full details are in docs/API.md, docs/architecture.md and docs/threat-model.md. These decisions are confirmed; the initial three application admins and final caps are named in §21. No application code is to be written until the Rust workstream is unblocked by group discussion.
+
+ID Decision
+P0-01 API: {data,error,meta} envelope; 422 terminal / 409 conflict / 200 duplicate; sync returns one 200 with per-item results; per-item DB transactions; idempotency via request key, batch_id and tx_id.
+P0-02 Auth: opaque 24h session token (hash stored); separate device enrolment with a signed challenge proof; client-generated UUID v4 device_id; sync requires token plus device signature.
+P0-03 Encoding: canonical CBOR; tx_id = SHA-256 of domain-prefixed canonical payment bytes; v1 domain strings inside signed bytes; fixed field set; issuer public keys from GET /config/keys plus app-pinned copy.
+P0-04 Payloads: allowance carries spend mode; payment binds allowance_hash and QR carries the full signed allowance; recipient bound by wallet ID only; chain_context is a network ID; 16-byte UUIDs and int64 seconds; device timestamps signed but advisory.
+P0-05 Allowances: multi-spend cumulative; reserve full cap at issuance; auto-release unused at expiry plus contest window; multiple active allowances per device; client requests amount, server caps.
+P0-06 Counters: device-wide monotonic; accept counter greater than last seen (gaps allowed); devices.last_counter compare-and-set; replay leads to review; recovery by re-enrolment with a new key.
+P0-07 Conflicts: provisional first acceptance with a configurable 5-minute contest window; losing claim frozen in REVIEW_REQUIRED; two of three designated app admins decide, with recusal of involved parties; ordering by server_received_at then tx_id; only accepted claims on-chain; late conflicts documented, not reversed.
+P0-08 Time and money: server UTC only; strict expiry with no grace; not_before = server_now minus 60s; explicit server caps with checked arithmetic; release at expiry plus contest window.
+P0-09 Blockchain: receipt plus one QBFT block is RECONCILED; backoff with five attempts; exhaustion leads to REVIEW_REQUIRED; duplicate registration with matching hash is success; mobile sees coarse chain_status.
+
+Initial application admins: Tazorx7, asarepok and Neequaye279. All three are GitHub write collaborators; application admin status is stored in the app-level admins table, independent of repository roles, and the list must be changeable later through an admin-management endpoint with append-only events.
+
+Confirmed caps: 10,000 pesewas maximum per allowance request, 500,000 pesewas initial simulated wallet balance, 5-minute configurable contest window. Section 5's blockchain-complexity gate is reaffirmed in §21.
+
+21. Agreed Implementation Decisions (P1)
+The following decisions complete the design contract. Full details are in docs/API.md, docs/architecture.md and docs/threat-model.md.
+
+ID Decision
+P1-01 Idempotency: records retained 7 days; replay detected by stored hash of the canonicalised body; status endpoints recompute current DB state; scope is (user_id, device_id, route, key); non-status mutations return the stored response.
+P1-02 QR: raw binary CBOR in byte mode with an OFPAY1 header; 600-byte target / 800-byte hard cap at ECC level M; compact 8-byte key_id; golden-vector CI size check; no multi-frame QR in MVP.
+P1-03 Keys: user-initiated rotation with new-key challenge proof plus admin revocation; bounded old-key overlap until min(24h, allowance.expires_at) with no new payments; device counter continues on same-device rotation; StrongBox preferred with a documented software fallback; key_id is an 8-byte hash of the public key.
+P1-04 Vectors: full canonical encoding/signature/hash set for allowance, payment, wallet-ID QR and enrolment challenge plus negative cases (tampering, wrong domain, unknown version, expiry, replayed counter) and a QR-size fixture; engine-generated files checked into tests/vectors/v1/; dedicated test-only keys and RFC 8032 primitives; required CI check once DevOps lands workflows; v1 immutable with a new directory per schema bump.
+P1-05 Chain: contract stores tx_id only (bytes32); event is TransactionRegistered(txId indexed, submitter, timestamp); duplicate registration reverts AlreadyRegistered and the backend maps a matching-hash revert to success; allowlisted backend signer only; no pause or emergency admin function in MVP.
+
+Open items: none blocking the design contract. Status checks remain unset until DevOps adds CI; the golden-vector job becomes a required check at that point. Application code remains on hold until the group unblocks the Rust workstream.
 
 
 ⸻
